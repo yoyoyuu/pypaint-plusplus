@@ -1,0 +1,17 @@
+db.sqlite3
+
+*.ppm
+
+__pycache__/
+*.pyc
+
+*.exe
+
+venv/
+env/
+
+.vscode/
+
+*.log
+
+**/migrations/__pycache__/
