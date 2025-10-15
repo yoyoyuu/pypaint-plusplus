@@ -57,7 +57,60 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentFill = fillCheckbox ? fillCheckbox.checked : false;
     let currentFillColor = fillColorPicker ? fillColorPicker.value : '#FFFFFF';
 
-    let serverImage = new Image(); 
+    let serverImage = new Image();
+
+    let historyStack = [];
+    let historyPointer = -1;
+    const MAX_HISTORY_STATES = 20;
+
+    function saveCanvasState() {
+        if (canvas.width === 0 || canvas.height === 0) return;
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        if (historyPointer < historyStack.length - 1) {
+            historyStack = historyStack.slice(0, historyPointer + 1);
+        }
+        historyStack.push(imageData);
+        if (historyStack.length > MAX_HISTORY_STATES) {
+            historyStack.shift();
+        }
+        historyPointer = historyStack.length - 1;
+
+        console.log(`Estado guardado. Puntero: ${historyPointer}, Longitud: ${historyStack.length}`);
+        updateUndoRedoButtons();
+    }
+
+    function restoreCanvasState(pointer) {
+        if (pointer < 0 || pointer >= historyStack.length) return;
+        const imageDataToRestore = historyStack[pointer];
+
+        if (canvas.width !== imageDataToRestore.width || canvas.height !== imageDataToRestore.height) {
+            canvas.width = imageDataToRestore.width;
+            canvas.height = imageDataToRestore.height;
+        }
+        ctx.putImageData(imageDataToRestore, 0, 0);
+        historyPointer = pointer;
+        updateUndoRedoButtons();
+    }
+
+    function undo() {
+        if (historyPointer > 0) {
+            restoreCanvasState(historyPointer - 1);
+            setStatusMessage('Acción deshecha.');
+        }
+    }
+
+    function redo() {
+        if (historyPointer < historyStack.length - 1) {
+            restoreCanvasState(historyPointer + 1);
+            setStatusMessage('Acción rehecha.');
+        }
+    }
+
+    function updateUndoRedoButtons() {
+        if (undoButton) undoButton.disabled = historyPointer <= 0;
+        if (redoButton) redoButton.disabled = historyPointer >= historyStack.length - 1;
+    }
 
     // --- Eventos ---
 
@@ -77,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 canvas.height = newHeightInput ? (parseInt(newHeightInput.value) || DEFAULT_CANVAS_HEIGHT) : DEFAULT_CANVAS_HEIGHT;
             }
         }
-        redrawCanvasBase(); 
+        redrawCanvasBase();
         hideLoading();
     };
 
@@ -166,10 +219,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Dibuja la previsualización encima
     function redrawCanvasWithPreview(tempDrawCallback) {
         if (!ctx) return;
-        redrawCanvasBase(); 
+        redrawCanvasBase();
         if (tempDrawCallback && typeof tempDrawCallback === 'function') {
             ctx.save();
-            tempDrawCallback(ctx); 
+            tempDrawCallback(ctx);
             ctx.restore();
         }
     }
@@ -206,11 +259,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (result.image_data_url) {
                             console.log("[Frontend] Recibido image_data_url. Actualizando serverImage.src.");
-                            serverImage.src = result.image_data_url; 
+                            serverImage.src = result.image_data_url;
                         } else if (data.tool === 'get_initial_canvas' && !result.image_data_url) {
                             console.warn("[Frontend] get_initial_canvas no devolvió image_data_url. Usando lienzo por defecto/limpio.");
-                            redrawCanvasBase(); 
-                            hideLoading(); 
+                            redrawCanvasBase();
+                            hideLoading();
                         }
 
                         if (result.message) { setStatusMessage(result.message); }
@@ -434,7 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Evento de inicio de dibujo
     canvas.addEventListener('pointerdown', (e) => {
-        if ((e.pointerType !== 'mouse' && e.pointerType !== 'pen') || 
+        if ((e.pointerType !== 'mouse' && e.pointerType !== 'pen') ||
             !['pincel_trazo', 'borrador_trazo', 'bote', 'linea', 'rectangulo'].includes(currentTool)) {
             return;
         }
@@ -470,6 +523,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Evento de movimiento del puntero mientras se dibuja
+    // paint.js
+
+    // ... (El resto del código) ...
+
+    // Evento de movimiento del puntero mientras se dibuja
     canvas.addEventListener('pointermove', (e) => {
         if (!isDrawing || currentTool === 'bote') return;
 
@@ -480,30 +538,43 @@ document.addEventListener('DOMContentLoaded', () => {
         const clampedX = Math.max(0, Math.min(canvas.width - 1, x));
         const clampedY = Math.max(0, Math.min(canvas.height - 1, y));
 
+        // Lógica de Presión (Restaurada)
+        let pressure = e.pressure !== undefined ? e.pressure : 0.5;
+        if (e.pointerType === 'pen' && pressure < 0.01) pressure = 0.01; // Mínimo para el lápiz
+
+        // Cálculo del tamaño dinámico
+        let dynamicSize = Math.max(1, currentSize * pressure);
+
         if (['pincel_trazo', 'borrador_trazo'].includes(currentTool)) {
             if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
                 const lastP = pathPoints.length > 0 ? pathPoints[pathPoints.length - 1] : null;
                 if (!lastP || (clampedX - lastP[0]) ** 2 + (clampedY - lastP[1]) ** 2 >= 4) {
-                    pathPoints.push([clampedX, clampedY, dynamicSize]);
+                    // Guardar coordenadas Y el tamaño dinámico para el trazo variable
+                    pathPoints.push([clampedX, clampedY, dynamicSize]); // [x, y, size]
                 }
             }
             if (pathPoints.length > 0) {
+                // Lógica de previsualización para trazos con tamaño dinámico
                 redrawCanvasWithPreview((previewCtx) => {
                     previewCtx.strokeStyle = currentTool === 'pincel_trazo' ? currentColor : '#FFFFFF';
                     previewCtx.lineCap = 'round';
                     previewCtx.lineJoin = 'round';
-                    
+
                     if (pathPoints.length > 1) {
-                        previewCtx.beginPath();
-                        previewCtx.moveTo(pathPoints[0][0], pathPoints[0][1]);
+                        // Dibujo por segmentos para manejar el cambio de grosor
                         for (let i = 1; i < pathPoints.length; i++) {
-                            previewCtx.lineWidth = pathPoints[i][2]; // [2] es dynamicSize
-                            previewCtx.lineTo(pathPoints[i][0], pathPoints[i][1]);
+                            const p1 = pathPoints[i - 1];
+                            const p2 = pathPoints[i];
+
+                            previewCtx.lineWidth = p1[2]; // Usar el tamaño del punto anterior
+                            previewCtx.beginPath();
+                            previewCtx.moveTo(p1[0], p1[1]);
+                            previewCtx.lineTo(p2[0], p2[1]);
                             previewCtx.stroke();
-                            previewCtx.beginPath(); // Empezar un nuevo sub-path para el siguiente segmento
-                            previewCtx.moveTo(pathPoints[i][0], pathPoints[i][1]);
                         }
                     } else if (pathPoints.length === 1) {
+                        // Dibujar el punto inicial
+                        previewCtx.lineWidth = pathPoints[0][2];
                         previewCtx.beginPath();
                         previewCtx.arc(pathPoints[0][0], pathPoints[0][1], pathPoints[0][2] / 2, 0, Math.PI * 2);
                         previewCtx.fillStyle = currentTool === 'pincel_trazo' ? currentColor : '#FFFFFF';
@@ -514,7 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (['linea', 'rectangulo'].includes(currentTool)) {
             redrawCanvasWithPreview((previewCtx) => {
                 previewCtx.strokeStyle = currentColor;
-                previewCtx.lineWidth = currentSize;
+                previewCtx.lineWidth = currentSize; // Usar tamaño fijo
                 const currentDrawX = clampedX;
                 const currentDrawY = clampedY;
 
@@ -542,39 +613,111 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     canvas.addEventListener('pointerup', (e) => {
-        if (!isDrawing || currentTool === 'bote') return;
-        
+        // 1. Verificación Inicial y Finalización
+        if (!isDrawing) return; // Si no estábamos dibujando (ya sea por un evento pointerout que no finalizó correctamente o una doble pulsación)
+
+        // Para 'bote', la acción ya se envió en pointerdown, solo liberamos la captura
+        if (currentTool === 'bote') {
+            canvas.releasePointerCapture(e.pointerId);
+            isDrawing = false;
+            return;
+        }
+
+        // Liberar la captura del puntero y detener el flag de dibujo
         canvas.releasePointerCapture(e.pointerId);
         isDrawing = false;
 
+        // Obtener y restringir coordenadas finales
         const rect = canvas.getBoundingClientRect();
-        const endX = Math.floor(e.clientX - rect.left); 
+        const endX = Math.floor(e.clientX - rect.left);
         const endY = Math.floor(e.clientY - rect.top);
-        const clampedEndX = Math.max(0, Math.min(canvas.width - 1, endX)); 
+        const clampedEndX = Math.max(0, Math.min(canvas.width - 1, endX));
         const clampedEndY = Math.max(0, Math.min(canvas.height - 1, endY));
 
         let actionToSend = null;
 
+        // Lógica para Pincel/Borrador (Trazos)
         if (['pincel_trazo', 'borrador_trazo'].includes(currentTool)) {
+            // --- Lógica de Presión para el Punto Final ---
+            const lastPressure = e.pressure !== undefined ? e.pressure : 0.5;
+            const lastDynamicSize = Math.max(1, currentSize * lastPressure);
+
+            // Añadir el último punto del arrastre si es diferente
             if (endX >= 0 && endX < canvas.width && endY >= 0 && endY < canvas.height) {
                 const lastP = pathPoints.length > 0 ? pathPoints[pathPoints.length - 1] : null;
                 if (!lastP || (clampedEndX - lastP[0]) ** 2 + (clampedEndY - lastP[1]) ** 2 > 0) {
-                    const lastPressure = e.pressure !== undefined ? e.pressure : 0.5;
-                    const lastDynamicSize = Math.max(1, currentSize * lastPressure);
+                    // [x, y, size]
                     pathPoints.push([clampedEndX, clampedEndY, lastDynamicSize]);
                 }
             }
+
             if (pathPoints.length > 0) {
+                // 1. Limpiar la previsualización restaurando el estado anterior del historial
+                if (historyStack[historyPointer]) {
+                    ctx.putImageData(historyStack[historyPointer], 0, 0);
+                }
+
+                // 2. Dibujar el trazo final permanentemente (con grosor dinámico)
+                if (pathPoints.length > 1) {
+                    // Dibujar segmento por segmento para manejar el cambio de grosor
+                    for (let i = 1; i < pathPoints.length; i++) {
+                        const p1 = pathPoints[i - 1];
+                        const p2 = pathPoints[i];
+
+                        ctx.strokeStyle = currentTool === 'pincel_trazo' ? currentColor : '#FFFFFF';
+                        ctx.lineWidth = p1[2]; // Usar el tamaño dinámico del punto anterior
+                        ctx.beginPath();
+                        ctx.moveTo(p1[0], p1[1]);
+                        ctx.lineTo(p2[0], p2[1]);
+                        ctx.stroke();
+                    }
+                } else if (pathPoints.length === 1) {
+                    // Dibujar un punto grueso
+                    ctx.lineWidth = pathPoints[0][2];
+                    ctx.beginPath();
+                    ctx.arc(pathPoints[0][0], pathPoints[0][1], pathPoints[0][2] / 2, 0, Math.PI * 2);
+                    ctx.fillStyle = currentTool === 'pincel_trazo' ? currentColor : '#FFFFFF';
+                    ctx.fill();
+                }
+
+                // 3. Preparar la acción para el servidor (SOLO COORDENADAS)
+                // C++ no maneja el grosor dinámico, así que le enviamos el grosor fijo
+                // o el grosor MÁXIMO/PROMEDIO, pero por simplicidad, enviamos el grosor fijo de la UI.
                 const pathCoordsOnly = pathPoints.map(p => [p[0], p[1]]);
-                actionToSend = { tool: currentTool, path: pathCoordsOnly, size: currentSize };
+                actionToSend = { tool: currentTool, path: pathCoordsOnly, size: currentSize }; // currentSize es el valor del input
                 if (currentTool === 'pincel_trazo') { actionToSend.color = currentColor.substring(1); }
-            } else { 
-                redrawCanvasBase(); 
-                setStatusMessage("Trazo muy corto, no enviado."); 
+            } else {
+                redrawCanvasBase(); // Limpiar previsualización (si solo se dibujó un punto y no se envió)
+                setStatusMessage("Trazo muy corto, no enviado.");
+                pathPoints = []; // Limpiar pathPoints y salir
+                return;
             }
-            pathPoints = [];
+            pathPoints = []; // Limpiar pathPoints después de la preparación de la acción
+
         } else if (['linea', 'rectangulo'].includes(currentTool)) {
-            redrawCanvasBase();
+            // Lógica para Línea y Rectángulo (Dibujo Fijo)
+
+            // 1. Limpiar la previsualización restaurando el estado anterior del historial
+            if (historyStack[historyPointer]) {
+                ctx.putImageData(historyStack[historyPointer], 0, 0);
+            }
+
+            // 2. Dibujar la figura final permanentemente (sin cambios)
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = currentSize;
+            if (currentTool === 'linea') {
+                ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(clampedEndX, clampedEndY); ctx.stroke();
+            } else if (currentTool === 'rectangulo') {
+                const rectStartX = Math.min(startX, clampedEndX); const rectStartY = Math.min(startY, clampedEndY);
+                const rectWidth = Math.abs(clampedEndX - startX); const rectHeight = Math.abs(clampedEndY - startY);
+                if (fillCheckbox && fillCheckbox.checked && fillColorPicker) {
+                    ctx.fillStyle = fillColorPicker.value;
+                    ctx.fillRect(rectStartX, rectStartY, rectWidth, rectHeight);
+                }
+                ctx.strokeRect(rectStartX, rectStartY, rectWidth, rectHeight);
+            }
+
+            // 3. Preparar acción para el servidor
             actionToSend = {
                 tool: currentTool, x1: startX, y1: startY, x2: clampedEndX, y2: clampedEndY,
                 color: currentColor.substring(1), size: currentSize
@@ -587,13 +730,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (actionToSend) { sendDrawingCommand(actionToSend); }
+        // --- Pasos de Confirmación Optimista Finales ---
+
+        // 4. Guardar INMEDIATAMENTE el nuevo estado en el historial local
+        if (actionToSend) { // Solo guardar si realmente se envió algo
+            saveCanvasState();
+        }
+
+        // 5. Enviar la acción al servidor en segundo plano
+        if (actionToSend) {
+            sendDrawingCommand(actionToSend);
+        }
     });
 
     // Evento si el puntero sale del canvas
     canvas.addEventListener('pointerout', (e) => {
         if (!isDrawing || currentTool === 'bote') return;
-        
+
         // Finalizar el dibujo como si fuera un mouseup
         const rect = canvas.getBoundingClientRect();
         const endX = Math.floor(e.clientX - rect.left);
@@ -651,7 +804,7 @@ document.addEventListener('DOMContentLoaded', () => {
             currentTool = defaultToolButton.dataset.tool;
         }
         handleToolChange();
-        updateHistoryButtonsUI(false, false); 
+        updateHistoryButtonsUI(false, false);
         fetchInitialCanvas();
     }
 
